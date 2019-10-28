@@ -47,6 +47,8 @@
 
 #include <linux/display_state.h>
 
+#include <linux/display_state.h>
+
 #define DT_CMD_HDR 6
 #define DEFAULT_MDP_TRANSFER_TIME 14000
 
