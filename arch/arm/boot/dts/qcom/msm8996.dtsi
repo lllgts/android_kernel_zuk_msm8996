@@ -3159,23 +3159,20 @@
 	qcom,msm-thermal {
 		compatible = "qcom,msm-thermal";
 		reg = <0x70000 0x1000>;
-		qcom,sensor-id = <11>;
-		qcom,poll-ms = <100>;
-		qcom,limit-temp = <70>;
+		qcom,sensor-id = <1>;
+		qcom,poll-ms = <0>;
+		qcom,limit-temp = <150>;
 		qcom,temp-hysteresis = <10>;
 		qcom,therm-reset-temp = <115>;
 		qcom,freq-step = <4>;
-		qcom,core-limit-temp = <90>;
+		qcom,core-limit-temp = <150>;
 		qcom,core-temp-hysteresis = <10>;
 		qcom,hotplug-temp = <105>;
 		qcom,hotplug-temp-hysteresis = <30>;
-		qcom,freq-mitigation-temp = <90>;
-		qcom,freq-mitigation-temp-hysteresis = <40>;
-		qcom,freq-mitigation-value = <576000>;
 		qcom,online-hotplug-core;
 		qcom,synchronous-cluster-id = <0 1>;
-		qcom,synchronous-cluster-map = <0 2 &CPU0 &CPU1>,
-			<1 2 &CPU2 &CPU3>;
+		qcom,synchronous-cluster-map = <>,
+			<>;
 
 		qcom,vdd-restriction-temp = <5>;
 		qcom,vdd-restriction-temp-hysteresis = <10>;
