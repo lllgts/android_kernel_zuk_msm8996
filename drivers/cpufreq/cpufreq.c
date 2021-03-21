@@ -1146,14 +1146,6 @@ static int cpufreq_init_policy(struct cpufreq_policy *policy)
 
 	memcpy(&new_policy, policy, sizeof(*policy));
 
-	/* Update governor of new_policy to the governor used before hotplug */
-	gov = find_governor(policy->last_governor);
-	if (gov)
-		pr_debug("Restoring governor %s for cpu %d\n",
-				policy->governor->name, policy->cpu);
-	else
-		gov = CPUFREQ_DEFAULT_GOVERNOR;
-
 	new_policy.governor = gov;
 
 	/* Use the default policy if there is no last_policy. */
