@@ -372,33 +372,24 @@ static void adjust_jiffies(unsigned long val, struct cpufreq_freqs *ci)
  *********************************************************************/
 
 static DEFINE_PER_CPU(unsigned long, freq_scale) = SCHED_CAPACITY_SCALE;
+static DEFINE_PER_CPU(unsigned long, max_freq_cpu);
 static DEFINE_PER_CPU(unsigned long, max_freq_scale) = SCHED_CAPACITY_SCALE;
+static DEFINE_PER_CPU(unsigned long, min_freq_scale);
 
 static void
-scale_freq_capacity(struct cpufreq_policy *policy, struct cpufreq_freqs *freqs)
+scale_freq_capacity(const cpumask_t *cpus, unsigned long cur_freq,
+		    unsigned long max_freq)
 {
-	unsigned long cur = freqs ? freqs->new : policy->cur;
-	unsigned long scale = (cur << SCHED_CAPACITY_SHIFT) / policy->max;
-	struct cpufreq_cpuinfo *cpuinfo = &policy->cpuinfo;
+	unsigned long scale = (cur_freq << SCHED_CAPACITY_SHIFT) / max_freq;
 	int cpu;
 
-	pr_debug("cpus %*pbl cur/cur max freq %lu/%u kHz freq scale %lu\n",
-		 cpumask_pr_args(policy->cpus), cur, policy->max, scale);
-
-	for_each_cpu(cpu, policy->cpus)
+	for_each_cpu(cpu, cpus) {
 		per_cpu(freq_scale, cpu) = scale;
+		per_cpu(max_freq_cpu, cpu) = max_freq;
+	}
 
-	if (freqs)
-		return;
-
-	scale = (policy->max << SCHED_CAPACITY_SHIFT) / cpuinfo->max_freq;
-
-	pr_debug("cpus %*pbl cur max/max freq %u/%u kHz max freq scale %lu\n",
-		 cpumask_pr_args(policy->cpus), policy->max, cpuinfo->max_freq,
-		 scale);
-
-	for_each_cpu(cpu, policy->cpus)
-		per_cpu(max_freq_scale, cpu) = scale;
+	pr_debug("cpus %*pbl cur freq/max freq %lu/%lu kHz freq scale %lu\n",
+		 cpumask_pr_args(cpus), cur_freq, max_freq, scale);
 }
 
 unsigned long cpufreq_scale_freq_capacity(struct sched_domain *sd, int cpu)
@@ -406,9 +397,60 @@ unsigned long cpufreq_scale_freq_capacity(struct sched_domain *sd, int cpu)
 	return per_cpu(freq_scale, cpu);
 }
 
-unsigned long cpufreq_scale_max_freq_capacity(int cpu)
+static void
+scale_max_freq_capacity(const cpumask_t *cpus, unsigned long policy_max_freq)
+{
+	unsigned long scale, max_freq;
+	int cpu = cpumask_first(cpus);
+
+	if (cpu >= nr_cpu_ids)
+		return;
+
+	max_freq = per_cpu(max_freq_cpu, cpu);
+
+	if (!max_freq)
+		return;
+
+	scale = (policy_max_freq << SCHED_CAPACITY_SHIFT) / max_freq;
+
+	for_each_cpu(cpu, cpus)
+		per_cpu(max_freq_scale, cpu) = scale;
+
+	pr_debug("cpus %*pbl policy max freq/max freq %lu/%lu kHz max freq scale %lu\n",
+		 cpumask_pr_args(cpus), policy_max_freq, max_freq, scale);
+}
+
+unsigned long cpufreq_scale_max_freq_capacity(struct sched_domain *sd, int cpu)
 {
 	return per_cpu(max_freq_scale, cpu);
+}
+
+static void
+scale_min_freq_capacity(const cpumask_t *cpus, unsigned long policy_min_freq)
+{
+	unsigned long scale, max_freq;
+	int cpu = cpumask_first(cpus);
+
+	if (cpu >= nr_cpu_ids)
+		return;
+
+	max_freq = per_cpu(max_freq_cpu, cpu);
+
+	if (!max_freq)
+		return;
+
+	scale = (policy_min_freq << SCHED_CAPACITY_SHIFT) / max_freq;
+
+	for_each_cpu(cpu, cpus)
+		per_cpu(min_freq_scale, cpu) = scale;
+
+	pr_debug("cpus %*pbl policy min freq/max freq %lu/%lu kHz min freq scale %lu\n",
+		 cpumask_pr_args(cpus), policy_min_freq, max_freq, scale);
+}
+
+unsigned long cpufreq_scale_min_freq_capacity(struct sched_domain *sd, int cpu)
+{
+	return per_cpu(min_freq_scale, cpu);
 }
 
 static void __cpufreq_notify_transition(struct cpufreq_policy *policy,
@@ -518,7 +560,7 @@ wait:
 
 	spin_unlock(&policy->transition_lock);
 
-	scale_freq_capacity(policy, freqs);
+	scale_freq_capacity(policy->cpus, freqs->new, policy->cpuinfo.max_freq);
 #ifdef CONFIG_SMP
 	for_each_cpu(cpu, policy->cpus)
 		trace_cpu_capacity(capacity_curr_of(cpu), cpu);
@@ -888,6 +930,19 @@ static ssize_t show_bios_limit(struct cpufreq_policy *policy, char *buf)
 	return sprintf(buf, "%u\n", policy->cpuinfo.max_freq);
 }
 
+
+#ifdef CONFIG_VOLTAGE_CONTROL
+extern ssize_t get_Voltages(char *buf);
+static ssize_t show_UV_mV_table(struct cpufreq_policy *policy, char *buf)
+{
+	return get_Voltages(buf);
+}
+static ssize_t store_UV_mV_table(struct cpufreq_policy *policy, const char *buf, size_t count)
+{
+	return count;
+}
+#endif
+
 cpufreq_freq_attr_ro_perm(cpuinfo_cur_freq, 0400);
 cpufreq_freq_attr_ro(cpuinfo_min_freq);
 cpufreq_freq_attr_ro(cpuinfo_max_freq);
@@ -903,6 +958,10 @@ cpufreq_freq_attr_rw(scaling_max_freq);
 cpufreq_freq_attr_rw(scaling_governor);
 cpufreq_freq_attr_rw(scaling_setspeed);
 
+#ifdef CONFIG_VOLTAGE_CONTROL
+cpufreq_freq_attr_rw(UV_mV_table);
+#endif
+
 static struct attribute *default_attrs[] = {
 	&cpuinfo_min_freq.attr,
 	&cpuinfo_max_freq.attr,
@@ -915,6 +974,11 @@ static struct attribute *default_attrs[] = {
 	&scaling_driver.attr,
 	&scaling_available_governors.attr,
 	&scaling_setspeed.attr,
+
+#ifdef CONFIG_VOLTAGE_CONTROL
+	&UV_mV_table.attr,
+#endif
+
 	NULL
 };
 
@@ -2253,7 +2317,8 @@ static int cpufreq_set_policy(struct cpufreq_policy *policy,
 	blocking_notifier_call_chain(&cpufreq_policy_notifier_list,
 			CPUFREQ_NOTIFY, new_policy);
 
-	scale_freq_capacity(new_policy, NULL);
+	scale_max_freq_capacity(policy->cpus, policy->max);
+	scale_min_freq_capacity(policy->cpus, policy->min);
 
 	policy->min = new_policy->min;
 	policy->max = new_policy->max;
@@ -2405,6 +2470,142 @@ static int cpufreq_cpu_callback(struct notifier_block *nfb,
 static struct notifier_block __refdata cpufreq_cpu_notifier = {
 	.notifier_call = cpufreq_cpu_callback,
 };
+
+static int cluster_0[2] = {0,1};
+static int cluster_1[2] = {2,3};
+#if CONFIG_CPU_UNDERCLOCK_FREQ_HHP!=0
+static int cluster_2[0] = {};
+#endif
+
+static int cluster_0_ucfreq=CONFIG_CPU_UNDERCLOCK_FREQ_LP;
+static int cluster_1_ucfreq=CONFIG_CPU_UNDERCLOCK_FREQ_HP;
+#if CONFIG_CPU_UNDERCLOCK_FREQ_HHP!=0
+static int cluster_2_ucfreq=CONFIG_CPU_UNDERCLOCK_FREQ_HHP;
+#endif
+
+static int cluster_0_lastfreq;
+static int cluster_1_lastfreq;
+#if CONFIG_CPU_UNDERCLOCK_FREQ_HHP!=0
+static int cluster_2_lastfreq;
+#endif
+
+static bool underclocked;
+
+module_param_named(cluster_0_ucfreq, cluster_0_ucfreq, int, 0644);
+module_param_named(cluster_1_ucfreq, cluster_1_ucfreq, int, 0644);
+#if CONFIG_CPU_UNDERCLOCK_FREQ_HHP!=0
+module_param_named(cluster_2_ucfreq, cluster_2_ucfreq, int, 0644);
+#endif
+
+
+static inline int cpufreq_underclock_check_cluster(int cpu)
+{
+	int length = 0,i = 0;
+
+	//LP
+	length = sizeof(cluster_0)/sizeof(int);
+	for (i=0;i<length;i++){
+	if (cluster_0[i] == cpu && cluster_0_ucfreq!=0)
+		return 0;
+	}
+	
+	//HP
+	length = sizeof(cluster_1)/sizeof(int);
+	for (i=0;i<length;i++){
+	if (cluster_1[i] == cpu && cluster_1_ucfreq!=0)
+		return 1;
+	}
+
+#if CONFIG_CPU_UNDERCLOCK_FREQ_HHP!=0
+	//HHP
+	length = sizeof(cluster_2)/sizeof(int);
+	for (i=0;i<length;i++){
+	if (cluster_2[i] == cpu && cluster_2_ucfreq!=0)
+		return 2;
+	}
+#endif
+	
+	return -EINVAL;
+}
+static inline void cpufreq_underclock_set(int cluster,struct cpufreq_policy *policy,bool underclock)
+{
+	if (underclock){
+		switch(cluster){
+			case 0:
+				cluster_0_lastfreq=policy->max;
+				policy->max=cluster_0_ucfreq;
+				pr_info("Underclocked cluster0 to %d \n",cluster_0_ucfreq);
+				break;
+			case 1:
+				cluster_1_lastfreq=policy->max;
+				policy->max=cluster_1_ucfreq;
+				pr_info("Underclocked cluster1 to %d \n",cluster_1_ucfreq);
+				break;
+#if CONFIG_CPU_UNDERCLOCK_FREQ_HHP!=0
+			case 2:
+				cluster_2_lastfreq=policy->max;
+				policy->max=cluster_2_ucfreq;
+				pr_info("Underclocked cluster2 to %d \n",cluster_2_ucfreq);
+				break;
+#endif
+		}
+	}
+	else{
+		switch(cluster){
+			case 0:
+				policy->max=cluster_0_lastfreq;
+				pr_info("Resumed cluster0 to %d \n",cluster_0_lastfreq);
+				break;
+			case 1:
+				policy->max=cluster_1_lastfreq;
+				pr_info("Resumed cluster1 to %d \n",cluster_1_lastfreq);
+				break;
+#if CONFIG_CPU_UNDERCLOCK_FREQ_HHP!=0
+			case 2:
+				policy->max=cluster_2_lastfreq;
+				pr_info("Resumed cluster2 to %d \n",cluster_2_lastfreq);
+				break;
+#endif
+		}
+	}
+
+}
+
+int trigger_cpufreq_underclock(void)
+{
+	struct cpufreq_policy *policy;
+
+	if(underclocked)
+		return 1;
+
+	pr_info("Triggered cpu underclock\n");
+	for_each_policy(policy) {
+		cpufreq_underclock_set(cpufreq_underclock_check_cluster(policy->cpu),policy,true);
+		__cpufreq_governor(policy, CPUFREQ_GOV_STOP);
+		__cpufreq_governor(policy, CPUFREQ_GOV_START);
+		
+	}
+	underclocked=true;
+	return 0;
+}
+
+int resume_cpufreq_underclock(void)
+{
+	struct cpufreq_policy *policy;
+
+	if(!underclocked)
+		return 1;
+
+	pr_info("Resumed cpu underclock\n");
+	for_each_policy(policy) {
+		cpufreq_underclock_set(cpufreq_underclock_check_cluster(policy->cpu),policy,false);
+		__cpufreq_governor(policy, CPUFREQ_GOV_STOP);
+		__cpufreq_governor(policy, CPUFREQ_GOV_START);
+		
+	}
+	underclocked=false;
+	return 0;
+}
 
 /*********************************************************************
  *               BOOST						     *
